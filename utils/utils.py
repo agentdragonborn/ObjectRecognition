@@ -3,19 +3,27 @@ import cv2
 
 
 def load_weights(model, yolo_weight_file):
-    data = np.fromfile(yolo_weight_file, np.float32)
-    data = data[4:]
+    tiny_data = np.fromfile(yolo_weight_file, np.float32)[4:]
 
     index = 0
     for layer in model.layers:
-        shape = [w.shape for w in layer.get_weights()]
-        if shape != []:
-            kshape, bshape = shape
-            bia = data[index:index + np.prod(bshape)].reshape(bshape)
-            index += np.prod(bshape)
-            ker = data[index:index + np.prod(kshape)].reshape(kshape)
-            index += np.prod(kshape)
-            layer.set_weights([ker, bia])
+        weights = layer.get_weights()
+        if len(weights) > 0:
+            filter_shape, bias_shape = [w.shape for w in weights]
+            if len(filter_shape) > 2:  # For convolutional layers
+                filter_shape_i = filter_shape[::-1]
+                bias_weight = tiny_data[index:index + np.prod(bias_shape)].reshape(bias_shape)
+                index += np.prod(bias_shape)
+                filter_weight = tiny_data[index:index + np.prod(filter_shape_i)].reshape(filter_shape_i)
+                filter_weight = np.transpose(filter_weight, (2, 3, 1, 0))
+                index += np.prod(filter_shape)
+                layer.set_weights([filter_weight, bias_weight])
+            else:  # For regular hidden layers
+                bias_weight = tiny_data[index:index + np.prod(bias_shape)].reshape(bias_shape)
+                index += np.prod(bias_shape)
+                filter_weight = tiny_data[index:index + np.prod(filter_shape)].reshape(filter_shape)
+                index += np.prod(filter_shape)
+                layer.set_weights([filter_weight, bias_weight])
 
 
 class Box:
@@ -74,8 +82,14 @@ def yolo_net_out_to_car_boxes(net_out, threshold=0.2, sqrt=1.8, C=20, B=2, S=7):
             bx.c = confs[grid, b]
             bx.x = (cords[grid, b, 0] + grid % S) / S
             bx.y = (cords[grid, b, 1] + grid // S) / S
-            bx.w = cords[grid, b, 2] ** sqrt
-            bx.h = cords[grid, b, 3] ** sqrt
+            if np.isnan(cords[grid, b, 2] ** sqrt):
+                bx.w = np.exp(cords[grid, b, 2] + sqrt)
+            else:
+                bx.w = cords[grid, b, 2] ** sqrt
+            if np.isnan(cords[grid, b, 3] ** sqrt):
+                bx.h = np.exp(cords[grid, b, 3] + sqrt)
+            else:
+                bx.h = cords[grid, b, 3] ** sqrt
             p = probs[grid, :] * bx.c
 
             if p[class_num] >= threshold:
